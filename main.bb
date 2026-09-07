@@ -13,6 +13,11 @@
 ; - Gereksiz ic yuzler yok
 ; - Duvar kesismelerinde daha az z-fighting
 ; - "_" SATIR DEVAM ISARETI YOK
+; - WALK / RUN CAMERA BOB
+; - HOLD-TO-BLINK
+; - SCP-173 FLY-IN / FLY-TO-MACHINE ANIMATION
+; - 3D WALL OVERLAP CUT
+; - MAP BOX OVERLAP GUARD
 ; ============================================================
 
 AppTitle "SCP-173"
@@ -46,6 +51,8 @@ Const WALL_TILE_SIZE# = 2.0
 Const GROUND_TILE_SIZE# = 2.0
 Const GRASS_TILE_SIZE# = 4.0
 
+Global BlinkNextAllowedTime = 0
+
 ; ============================================================
 ; WORLD
 ; ============================================================
@@ -67,6 +74,22 @@ Const PLAYER_RUN_SPEED# = 8.0
 
 Const MOUSE_SENS# = .10
 
+Const WALK_BOB_SPEED# = 10.5
+Const WALK_BOB_X# = .018
+Const WALK_BOB_Y# = .025
+Const WALK_BOB_ROLL# = .40
+
+Const RUN_BOB_SPEED# = 14.0
+Const RUN_BOB_X# = .028
+Const RUN_BOB_Y# = .040
+Const RUN_BOB_ROLL# = .65
+
+Global CameraBobTime# = 0
+Global CameraBobX# = 0
+Global CameraBobY# = 0
+Global CameraBobRoll# = 0
+Global PlayerMoveMode = 0
+
 Global Player
 Global Camera
 
@@ -84,12 +107,19 @@ Const RESTART_DELAY = 3000
 
 Global WalkSound
 Global RunSound
+Global KillSound
+Global SCPMoveSound
 
 Global FootstepChannel
 Global FootstepMode = 0
+Global KillChannel = 0
+Global SCPMoveChannel = 0
+Global SCPMovedThisFrame = 0
 
 WalkSound = LoadSound("SFX\Walk.mp3")
 RunSound = LoadSound("SFX\Run.mp3")
+KillSound = LoadSound("SFX\Kill.mp3")
+SCPMoveSound = LoadSound("SFX\173Move.mp3")
 
 ; ============================================================
 ; MUSIC
@@ -142,6 +172,16 @@ Global SCPPathCount = 0
 
 Const SCP_PATH_REFRESH = 180
 
+Const SCP_PICKUP_ANIM_MS = 520
+Const SCP_PLACE_ANIM_MS = 620
+
+Global SCPAnimStartX# = 0
+Global SCPAnimStartY# = 0
+Global SCPAnimStartZ# = 0
+Global SCPAnimTargetX# = 0
+Global SCPAnimTargetY# = 0
+Global SCPAnimTargetZ# = 0
+
 ; ============================================================
 ; BLINK
 ; ============================================================
@@ -180,6 +220,36 @@ Dim ObsHX#(MAX_OBSTACLES)
 Dim ObsHZ#(MAX_OBSTACLES)
 
 Global ObsCount = 0
+
+; ============================================================
+; WALL GEOMETRY REGISTRY
+; ============================================================
+
+Const MAX_WALL_PARTS = 800
+
+Dim WallPartEnt(MAX_WALL_PARTS)
+Dim WallPartX#(MAX_WALL_PARTS)
+Dim WallPartY#(MAX_WALL_PARTS)
+Dim WallPartZ#(MAX_WALL_PARTS)
+Dim WallPartHX#(MAX_WALL_PARTS)
+Dim WallPartHY#(MAX_WALL_PARTS)
+Dim WallPartHZ#(MAX_WALL_PARTS)
+
+Global WallPartCount = 0
+
+Const MAX_WALL_WORK = 256
+Dim WorkX#(MAX_WALL_WORK)
+Dim WorkY#(MAX_WALL_WORK)
+Dim WorkZ#(MAX_WALL_WORK)
+Dim WorkHX#(MAX_WALL_WORK)
+Dim WorkHY#(MAX_WALL_WORK)
+Dim WorkHZ#(MAX_WALL_WORK)
+Dim NextX#(MAX_WALL_WORK)
+Dim NextY#(MAX_WALL_WORK)
+Dim NextZ#(MAX_WALL_WORK)
+Dim NextHX#(MAX_WALL_WORK)
+Dim NextHY#(MAX_WALL_WORK)
+Dim NextHZ#(MAX_WALL_WORK)
 
 ; ============================================================
 ; GATES
@@ -473,27 +543,27 @@ End Function
 ;   - duvarlar ic ice girdiginde daha az z-fighting olur
 ; ============================================================
 
-Function MakeWallCube(x#,y#,z#,sx#,sy#,sz#,r,g,b)
+Function CreateWallPiece(x#,y#,z#,sx#,sy#,sz#,r,g,b)
 
 	Local mesh
 	Local surf
-
 	Local hx#
 	Local hy#
 	Local hz#
-
 	Local width#
 	Local height#
 	Local depth#
-
 	Local uWidth#
 	Local uDepth#
 	Local vHeight#
-
 	Local v0
 	Local v1
 	Local v2
 	Local v3
+
+	If sx# <= .005 Then Return 0
+	If sy# <= .005 Then Return 0
+	If sz# <= .005 Then Return 0
 
 	mesh = CreateMesh()
 	surf = CreateSurface(mesh)
@@ -514,77 +584,291 @@ Function MakeWallCube(x#,y#,z#,sx#,sy#,sz#,r,g,b)
 	If uDepth# < .01 Then uDepth# = .01
 	If vHeight# < .01 Then vHeight# = .01
 
-	; ========================================================
-	; FRONT -Z
-	; OUTWARD NORMAL
-	; ========================================================
-
 	v0 = AddVertex(surf,-hx#,-hy#,-hz#,0,vHeight#)
 	v1 = AddVertex(surf,-hx#,hy#,-hz#,0,0)
 	v2 = AddVertex(surf,hx#,hy#,-hz#,uWidth#,0)
 	v3 = AddVertex(surf,hx#,-hy#,-hz#,uWidth#,vHeight#)
-
 	AddTriangle surf,v0,v1,v2
 	AddTriangle surf,v0,v2,v3
-
-	; ========================================================
-	; BACK +Z
-	; ========================================================
 
 	v0 = AddVertex(surf,hx#,-hy#,hz#,0,vHeight#)
 	v1 = AddVertex(surf,hx#,hy#,hz#,0,0)
 	v2 = AddVertex(surf,-hx#,hy#,hz#,uWidth#,0)
 	v3 = AddVertex(surf,-hx#,-hy#,hz#,uWidth#,vHeight#)
-
 	AddTriangle surf,v0,v1,v2
 	AddTriangle surf,v0,v2,v3
-
-	; ========================================================
-	; LEFT -X
-	; ========================================================
 
 	v0 = AddVertex(surf,-hx#,-hy#,hz#,0,vHeight#)
 	v1 = AddVertex(surf,-hx#,hy#,hz#,0,0)
 	v2 = AddVertex(surf,-hx#,hy#,-hz#,uDepth#,0)
 	v3 = AddVertex(surf,-hx#,-hy#,-hz#,uDepth#,vHeight#)
-
 	AddTriangle surf,v0,v1,v2
 	AddTriangle surf,v0,v2,v3
-
-	; ========================================================
-	; RIGHT +X
-	; ========================================================
 
 	v0 = AddVertex(surf,hx#,-hy#,-hz#,0,vHeight#)
 	v1 = AddVertex(surf,hx#,hy#,-hz#,0,0)
 	v2 = AddVertex(surf,hx#,hy#,hz#,uDepth#,0)
 	v3 = AddVertex(surf,hx#,-hy#,hz#,uDepth#,vHeight#)
-
 	AddTriangle surf,v0,v1,v2
 	AddTriangle surf,v0,v2,v3
 
-	; ========================================================
-	; UST / ALT YUZLER BILEREK YOK
-	; ========================================================
-
 	If WallTexture <> 0 Then
-
 		EntityTexture mesh,WallTexture
 		EntityColor mesh,255,255,255
-
 	Else
-
 		EntityColor mesh,r,g,b
-
 	EndIf
 
 	PositionEntity mesh,x#,y#,z#
-
-	AddObstacle x#,z#,sx#,sz#
-
 	UpdateNormals mesh
 
 	Return mesh
+
+End Function
+
+Function RegisterWallPiece(entity,x#,y#,z#,sx#,sy#,sz#)
+
+	If entity = 0 Then Return
+	If WallPartCount >= MAX_WALL_PARTS Then Return
+
+	WallPartEnt(WallPartCount) = entity
+	WallPartX#(WallPartCount) = x#
+	WallPartY#(WallPartCount) = y#
+	WallPartZ#(WallPartCount) = z#
+	WallPartHX#(WallPartCount) = sx#
+	WallPartHY#(WallPartCount) = sy#
+	WallPartHZ#(WallPartCount) = sz#
+	WallPartCount = WallPartCount+1
+
+	AddObstacle x#,z#,sx#,sz#
+
+End Function
+
+Function ResetWallParts()
+	WallPartCount = 0
+End Function
+
+Function MakeWallCube(x#,y#,z#,sx#,sy#,sz#,r,g,b)
+
+	Local i
+	Local j
+	Local count
+	Local nextCount
+	Local px#
+	Local py#
+	Local pz#
+	Local phx#
+	Local phy#
+	Local phz#
+	Local ex#
+	Local ey#
+	Local ez#
+	Local ehx#
+	Local ehy#
+	Local ehz#
+	Local pMinX#
+	Local pMaxX#
+	Local pMinY#
+	Local pMaxY#
+	Local pMinZ#
+	Local pMaxZ#
+	Local eMinX#
+	Local eMaxX#
+	Local eMinY#
+	Local eMaxY#
+	Local eMinZ#
+	Local eMaxZ#
+	Local cutMinX#
+	Local cutMaxX#
+	Local cutMinZ#
+	Local cutMaxZ#
+	Local nx#
+	Local nz#
+	Local nhx#
+	Local nhz#
+	Local eps#
+	Local e
+
+	eps# = .002
+	count = 1
+
+	WallPartX#(MAX_WALL_PARTS-1) = x#
+	WallPartY#(MAX_WALL_PARTS-1) = y#
+	WallPartZ#(MAX_WALL_PARTS-1) = z#
+	WallPartHX#(MAX_WALL_PARTS-1) = sx#
+	WallPartHY#(MAX_WALL_PARTS-1) = sy#
+	WallPartHZ#(MAX_WALL_PARTS-1) = sz#
+
+	; Scratch pieces are stored in the last slots of the same arrays.
+	; At most 256 pieces are allowed for one new wall.
+	WorkX#(0)=x#
+	WorkY#(0)=y#
+	WorkZ#(0)=z#
+	WorkHX#(0)=sx#
+	WorkHY#(0)=sy#
+	WorkHZ#(0)=sz#
+
+	For i = 0 To WallPartCount-1
+
+		If WallPartEnt(i) <> 0 Then
+
+			ex# = WallPartX#(i)
+			ey# = WallPartY#(i)
+			ez# = WallPartZ#(i)
+			ehx# = WallPartHX#(i)
+			ehy# = WallPartHY#(i)
+			ehz# = WallPartHZ#(i)
+
+			eMinX# = ex#-ehx#
+			eMaxX# = ex#+ehx#
+			eMinY# = ey#-ehy#
+			eMaxY# = ey#+ehy#
+			eMinZ# = ez#-ehz#
+			eMaxZ# = ez#+ehz#
+
+			nextCount = 0
+
+			For j = 0 To count-1
+
+				px# = WorkX#(j)
+				py# = WorkY#(j)
+				pz# = WorkZ#(j)
+				phx# = WorkHX#(j)
+				phy# = WorkHY#(j)
+				phz# = WorkHZ#(j)
+
+				pMinX# = px#-phx#
+				pMaxX# = px#+phx#
+				pMinY# = py#-phy#
+				pMaxY# = py#+phy#
+				pMinZ# = pz#-phz#
+				pMaxZ# = pz#+phz#
+
+				If pMaxY# <= eMinY#+eps# Or pMinY# >= eMaxY#-eps# Then
+					If nextCount < MAX_WALL_WORK Then
+						NextX#(nextCount)=px#
+						NextY#(nextCount)=py#
+						NextZ#(nextCount)=pz#
+						NextHX#(nextCount)=phx#
+						NextHY#(nextCount)=phy#
+						NextHZ#(nextCount)=phz#
+						nextCount=nextCount+1
+					EndIf
+				ElseIf pMaxX# <= eMinX#+eps# Or pMinX# >= eMaxX#-eps# Then
+					If nextCount < MAX_WALL_WORK Then
+						NextX#(nextCount)=px#
+						NextY#(nextCount)=py#
+						NextZ#(nextCount)=pz#
+						NextHX#(nextCount)=phx#
+						NextHY#(nextCount)=phy#
+						NextHZ#(nextCount)=phz#
+						nextCount=nextCount+1
+					EndIf
+				ElseIf pMaxZ# <= eMinZ#+eps# Or pMinZ# >= eMaxZ#-eps# Then
+					If nextCount < MAX_WALL_WORK Then
+						NextX#(nextCount)=px#
+						NextY#(nextCount)=py#
+						NextZ#(nextCount)=pz#
+						NextHX#(nextCount)=phx#
+						NextHY#(nextCount)=phy#
+						NextHZ#(nextCount)=phz#
+						nextCount=nextCount+1
+					EndIf
+				Else
+					; X-left remainder
+					If pMinX# < eMinX#-eps# Then
+						nx# = (pMinX#+eMinX#)/2.0
+						nhx# = (eMinX#-pMinX#)/2.0
+						If nhx# > .005 And nextCount < MAX_WALL_WORK Then
+							NextX#(nextCount)=nx#
+							NextY#(nextCount)=py#
+							NextZ#(nextCount)=pz#
+							NextHX#(nextCount)=nhx#
+							NextHY#(nextCount)=phy#
+							NextHZ#(nextCount)=phz#
+							nextCount=nextCount+1
+						EndIf
+					EndIf
+
+					; X-right remainder
+					If pMaxX# > eMaxX#+eps# Then
+						nx# = (eMaxX#+pMaxX#)/2.0
+						nhx# = (pMaxX#-eMaxX#)/2.0
+						If nhx# > .005 And nextCount < MAX_WALL_WORK Then
+							NextX#(nextCount)=nx#
+							NextY#(nextCount)=py#
+							NextZ#(nextCount)=pz#
+							NextHX#(nextCount)=nhx#
+							NextHY#(nextCount)=phy#
+							NextHZ#(nextCount)=phz#
+							nextCount=nextCount+1
+						EndIf
+					EndIf
+
+					cutMinX# = pMinX#
+					If cutMinX# < eMinX# Then cutMinX# = eMinX#
+					cutMaxX# = pMaxX#
+					If cutMaxX# > eMaxX# Then cutMaxX# = eMaxX#
+
+					If cutMaxX#-cutMinX# > .01 Then
+
+						; Z-front remainder
+						If pMinZ# < eMinZ#-eps# Then
+							nz# = (pMinZ#+eMinZ#)/2.0
+							nhz# = (eMinZ#-pMinZ#)/2.0
+							If nhz# > .005 And nextCount < MAX_WALL_WORK Then
+								NextX#(nextCount)=(cutMinX#+cutMaxX#)/2.0
+								NextY#(nextCount)=py#
+								NextZ#(nextCount)=nz#
+								NextHX#(nextCount)=(cutMaxX#-cutMinX#)/2.0
+								NextHY#(nextCount)=phy#
+								NextHZ#(nextCount)=nhz#
+								nextCount=nextCount+1
+							EndIf
+						EndIf
+
+						; Z-back remainder
+						If pMaxZ# > eMaxZ#+eps# Then
+							nz# = (eMaxZ#+pMaxZ#)/2.0
+							nhz# = (pMaxZ#-eMaxZ#)/2.0
+							If nhz# > .005 And nextCount < MAX_WALL_WORK Then
+								NextX#(nextCount)=(cutMinX#+cutMaxX#)/2.0
+								NextY#(nextCount)=py#
+								NextZ#(nextCount)=nz#
+								NextHX#(nextCount)=(cutMaxX#-cutMinX#)/2.0
+								NextHY#(nextCount)=phy#
+								NextHZ#(nextCount)=nhz#
+								nextCount=nextCount+1
+							EndIf
+						EndIf
+					EndIf
+				EndIf
+
+			Next
+
+			count = nextCount
+
+			For j = 0 To count-1
+				WorkX#(j)=NextX#(j)
+				WorkY#(j)=NextY#(j)
+				WorkZ#(j)=NextZ#(j)
+				WorkHX#(j)=NextHX#(j)
+				WorkHY#(j)=NextHY#(j)
+				WorkHZ#(j)=NextHZ#(j)
+			Next
+
+			If count = 0 Then Return
+
+		EndIf
+
+	Next
+
+	For i = 0 To count-1
+		If WorkHX#(i) > .005 And WorkHY#(i) > .005 And WorkHZ#(i) > .005 Then
+			e = CreateWallPiece(WorkX#(i),WorkY#(i),WorkZ#(i),WorkHX#(i),WorkHY#(i),WorkHZ#(i),r,g,b)
+			RegisterWallPiece e,WorkX#(i),WorkY#(i),WorkZ#(i),WorkHX#(i),WorkHY#(i),WorkHZ#(i)
+		EndIf
+	Next
 
 End Function
 
@@ -1620,8 +1904,10 @@ Function UpdatePlayer(dt#)
 		TryMovePlayerZ moveZ#
 
 		If speed# = PLAYER_RUN_SPEED# Then
+			PlayerMoveMode = 2
 			UpdateFootsteps(2)
 		Else
+			PlayerMoveMode = 1
 			UpdateFootsteps(1)
 		EndIf
 
@@ -1630,6 +1916,63 @@ Function UpdatePlayer(dt#)
 		UpdateFootsteps(0)
 
 	EndIf
+
+End Function
+
+; ============================================================
+; CAMERA BOB
+; ============================================================
+
+Function UpdateCameraBob(dt#)
+
+	Local targetX#
+	Local targetY#
+	Local targetRoll#
+	Local speed#
+	Local ampX#
+	Local ampY#
+	Local ampRoll#
+	Local lerp#
+
+	If PlayerDead = 1 Then PlayerMoveMode = 0
+
+	If PlayerMoveMode = 1 Then
+		speed# = WALK_BOB_SPEED#
+		ampX# = WALK_BOB_X#
+		ampY# = WALK_BOB_Y#
+		ampRoll# = WALK_BOB_ROLL#
+	ElseIf PlayerMoveMode = 2 Then
+		speed# = RUN_BOB_SPEED#
+		ampX# = RUN_BOB_X#
+		ampY# = RUN_BOB_Y#
+		ampRoll# = RUN_BOB_ROLL#
+	Else
+		speed# = 0
+		ampX# = 0
+		ampY# = 0
+		ampRoll# = 0
+	EndIf
+
+	If PlayerMoveMode <> 0 Then
+		CameraBobTime# = CameraBobTime#+dt#*speed#
+		targetX# = Sin(CameraBobTime#*0.50)*ampX#
+		targetY# = Abs(Sin(CameraBobTime#))*ampY#
+		targetRoll# = Sin(CameraBobTime#*0.50)*ampRoll#
+	Else
+		targetX# = 0
+		targetY# = 0
+		targetRoll# = 0
+	EndIf
+
+	lerp# = dt#*10.0
+	If lerp# > 1.0 Then lerp# = 1.0
+
+	CameraBobX# = CameraBobX#+(targetX#-CameraBobX#)*lerp#
+	CameraBobY# = CameraBobY#+(targetY#-CameraBobY#)*lerp#
+	CameraBobRoll# = CameraBobRoll#+(targetRoll#-CameraBobRoll#)*lerp#
+
+	PositionEntity Camera,CameraBobX#,0.65+CameraBobY#,0
+	RotateEntity Camera,CamPitch#,0,CameraBobRoll#
 
 End Function
 
@@ -1710,29 +2053,33 @@ Function StartBlink()
 	If PlayerDead = 1 Then Return
 
 	BlinkActive = 1
-
 	BlinkStartTime = MilliSecs()
 
 	BlinkSCPStartX# = EntityX(SCP173)
 	BlinkSCPStartZ# = EntityZ(SCP173)
+	BlinkSCPDistance# = 0
 
+End Function
+
+Function StopBlink()
+
+	BlinkActive = 0
+	BlinkStartTime = 0
 	BlinkSCPDistance# = 0
 
 End Function
 
 Function UpdateBlink()
 
-	Local now
+	If PlayerDead = 1 Then
+		StopBlink()
+		Return
+	EndIf
 
-	If BlinkActive = 0 Then Return
-
-	now = MilliSecs()
-
-	If now >= BlinkStartTime+BLINK_DURATION Then
-
-		BlinkActive = 0
-		BlinkStartTime = 0
-
+	If KeyDown(57) Then
+		If BlinkActive = 0 Then StartBlink()
+	Else
+		If BlinkActive = 1 Then StopBlink()
 	EndIf
 
 End Function
@@ -1867,6 +2214,8 @@ End Function
 
 Function MoveSCPDirect(dt#)
 
+	SCPMovedThisFrame = 0
+
 	Local sx#
 	Local sz#
 
@@ -1942,19 +2291,40 @@ Function MoveSCPDirect(dt#)
 
 	If BlinkActive = 1 Then
 
-		remainingDistance# = SCP_BLINK_MAX_DISTANCE#-BlinkSCPDistance#
+		; ====================================================
+		; 10 STUD TAMAMLANDI
+		; ====================================================
 
-		If remainingDistance# <= 0 Then
+		If BlinkSCPDistance# >= SCP_BLINK_MAX_DISTANCE# Then
 
-			FaceSCPToPlayer()
+			; İlk kez 10 stud tamamlandıysa cooldown başlat
+			If BlinkNextAllowedTime = 0 Then
+				BlinkNextAllowedTime = MilliSecs() + 500
+			EndIf
 
-			Return
+			; ====================================================
+			; 0.5 SANİYE COOLDOWN
+			; ====================================================
+
+			If MilliSecs() >= BlinkNextAllowedTime Then
+
+				; Yeni 10 stud segmenti
+				BlinkSCPStartX# = EntityX(SCP173)
+				BlinkSCPStartZ# = EntityZ(SCP173)
+
+				BlinkSCPDistance# = 0.0
+
+				; Cooldown kapat
+				BlinkNextAllowedTime = 0
+
+			EndIf
 
 		EndIf
 
-		If moveAmount# > remainingDistance# Then
-			moveAmount# = remainingDistance#
-		EndIf
+	Else
+
+		; Blink bırakıldıysa tamamen sıfırla
+		BlinkNextAllowedTime = 0
 
 	EndIf
 
@@ -1976,6 +2346,8 @@ Function MoveSCPDirect(dt#)
 
 		movedX# = Abs(EntityX(SCP173)-oldX#)
 
+		If movedX# > .001 Then SCPMovedThisFrame = 1
+
 		If BlinkActive = 1 Then
 			BlinkSCPDistance# = BlinkSCPDistance#+movedX#
 		EndIf
@@ -1996,6 +2368,8 @@ Function MoveSCPDirect(dt#)
 	Else
 
 		movedZ# = Abs(EntityZ(SCP173)-oldZ#)
+
+		If movedZ# > .001 Then SCPMovedThisFrame = 1
 
 		If BlinkActive = 1 Then
 			BlinkSCPDistance# = BlinkSCPDistance#+movedZ#
@@ -2020,6 +2394,37 @@ Function MoveSCPDirect(dt#)
 	FaceSCPToPlayer()
 
 	ForceSCPScale()
+
+End Function
+
+; ============================================================
+; SCP MOVE SOUND
+; ============================================================
+
+Function UpdateSCPMoveSound()
+
+	If SCPMoveSound = 0 Then Return
+
+	If PlayerDead = 1 Then
+		If SCPMoveChannel <> 0 Then StopChannel SCPMoveChannel
+		SCPMoveChannel = 0
+		Return
+	EndIf
+
+	If SCPState <> STATE_ACTIVE Then
+		If SCPMoveChannel <> 0 Then StopChannel SCPMoveChannel
+		SCPMoveChannel = 0
+		Return
+	EndIf
+
+	If SCPMovedThisFrame = 1 Then
+		If SCPMoveChannel = 0 Or ChannelPlaying(SCPMoveChannel) = 0 Then
+			SCPMoveChannel = PlaySound(SCPMoveSound)
+		EndIf
+	ElseIf SCPMoveChannel <> 0 Then
+		StopChannel SCPMoveChannel
+		SCPMoveChannel = 0
+	EndIf
 
 End Function
 
@@ -2094,6 +2499,14 @@ Function CheckSCPAttack()
 
 		PlayerDead = 1
 		DeathTime = MilliSecs()
+
+		If SCPMoveChannel <> 0 Then StopChannel SCPMoveChannel
+		SCPMoveChannel = 0
+
+		If KillSound <> 0 Then
+			If KillChannel <> 0 Then StopChannel KillChannel
+			KillChannel = PlaySound(KillSound)
+		EndIf
 
 		SCPState = STATE_ATTACK
 
@@ -2506,42 +2919,78 @@ End Function
 ; PICKUP
 ; ============================================================
 
+Function GetHandWorldX#()
+	Local px#
+	px# = EntityX(Player)
+	Return px#+(-Sin(CamYaw#))*.48+Cos(CamYaw#)*.16
+End Function
+
+Function GetHandWorldY#()
+	Return EntityY(Player)+.72
+End Function
+
+Function GetHandWorldZ#()
+	Local pz#
+	pz# = EntityZ(Player)
+	Return pz#+Cos(CamYaw#)*.48+Sin(CamYaw#)*.16
+End Function
+
 Function TryPickup()
 
 	If EPressed = 0 Then Return
 	If SCPState <> STATE_NORMAL Then Return
 	If IsNearCrate() = 0 Then Return
 
+	EntityParent SCP173,0
+
+	SCPAnimStartX# = EntityX(SCP173)
+	SCPAnimStartY# = EntityY(SCP173)
+	SCPAnimStartZ# = EntityZ(SCP173)
+
+	SCPAnimTargetX# = GetHandWorldX#()
+	SCPAnimTargetY# = GetHandWorldY#()
+	SCPAnimTargetZ# = GetHandWorldZ#()
+
 	SCPState = STATE_PICKUP
-	SCPAnimTimer = 0
+	SCPAnimTimer = MilliSecs()
 
 End Function
 
 Function UpdatePickup()
 
+	Local t#
+	Local now
+	Local eased#
+	Local x#
+	Local y#
+	Local z#
+
 	If SCPState <> STATE_PICKUP Then Return
 
-	SCPAnimTimer = SCPAnimTimer+1
+	now = MilliSecs()
+	t# = Float(now-SCPAnimTimer)/Float(SCP_PICKUP_ANIM_MS)
+	If t# > 1.0 Then t# = 1.0
+	If t# < 0.0 Then t# = 0.0
 
-	If SCPAnimTimer < 20 Then
+	eased# = t#*t#*(3.0-2.0*t#)
 
-		PositionEntity SCP173,-2.6,.45,.7
-		RotateEntity SCP173,-90,0,0
+	; Hafif bir yay ile ele dogru ucus.
+	x# = SCPAnimStartX#+(SCPAnimTargetX#-SCPAnimStartX#)*eased#
+	y# = SCPAnimStartY#+(SCPAnimTargetY#-SCPAnimStartY#)*eased# + Sin(t#*180.0)*.20
+	z# = SCPAnimStartZ#+(SCPAnimTargetZ#-SCPAnimStartZ#)*eased#
 
-		ForceSCPScale()
+	PositionEntity SCP173,x#,y#,z#
+	RotateEntity SCP173,-90,0,0
+	ForceSCPScale()
 
-	Else
-
+	If t# >= 1.0 Then
 		SCPState = STATE_CARRY
 		SCPPicked = 1
 
 		EntityParent SCP173,Player
-
 		PositionEntity SCP173,0,.15,-1.1
 		RotateEntity SCP173,0,0,0
-
 		ForceSCPScale()
-
 	EndIf
 
 End Function
@@ -2557,21 +3006,22 @@ Function UpdateCarry()
 	ForceSCPScale()
 
 	If EPressed = 1 Then
-
 		If IsNearMachine() = 1 Then
 
 			EntityParent SCP173,0
 
-			PositionEntity SCP173,2.8,SCP_GROUND_Y#,.70
-			RotateEntity SCP173,-90,0,0
+			SCPAnimStartX# = EntityX(SCP173)
+			SCPAnimStartY# = EntityY(SCP173)
+			SCPAnimStartZ# = EntityZ(SCP173)
 
-			ForceSCPScale()
+			SCPAnimTargetX# = 2.8
+			SCPAnimTargetY# = SCP_GROUND_Y#
+			SCPAnimTargetZ# = .70
 
 			SCPState = STATE_PLACE
-			SCPAnimTimer = 0
+			SCPAnimTimer = MilliSecs()
 
 		EndIf
-
 	EndIf
 
 End Function
@@ -2582,32 +3032,36 @@ End Function
 
 Function UpdatePlace()
 
+	Local t#
+	Local eased#
+	Local y#
+	Local now
+
 	If SCPState <> STATE_PLACE Then Return
 
-	SCPAnimTimer = SCPAnimTimer+1
+	now = MilliSecs()
+	t# = Float(now-SCPAnimTimer)/Float(SCP_PLACE_ANIM_MS)
+	If t# > 1.0 Then t# = 1.0
+	If t# < 0.0 Then t# = 0.0
 
-	If SCPAnimTimer < 20 Then
+	eased# = t#*t#*(3.0-2.0*t#)
 
-		PositionEntity SCP173,2.8,SCP_GROUND_Y#,.70
+	y# = SCPAnimStartY#+(SCPAnimTargetY#-SCPAnimStartY#)*eased# + Sin(t#*180.0)*.35
+
+	PositionEntity SCP173,SCPAnimStartX#+(SCPAnimTargetX#-SCPAnimStartX#)*eased#,y#,SCPAnimStartZ#+(SCPAnimTargetZ#-SCPAnimStartZ#)*eased#
+	RotateEntity SCP173,-90,0,0
+	ForceSCPScale()
+
+	If t# >= 1.0 Then
+		PositionEntity SCP173,SCPAnimTargetX#,SCPAnimTargetY#,SCPAnimTargetZ#
 		RotateEntity SCP173,-90,0,0
-
-		ForceSCPScale()
-
-	Else
-
-		PositionEntity SCP173,2.8,SCP_GROUND_Y#,.70
-		RotateEntity SCP173,-90,0,0
-
 		ForceSCPScale()
 
 		SCPPlaced = 1
 		SCPState = STATE_MACHINE_READY
-
 		MachineReady = 1
 		MachineRunning = 0
-
 		SCPAnimTimer = 0
-
 	EndIf
 
 End Function
@@ -3346,6 +3800,17 @@ Function ResetGame()
 
 	FootstepMode = 0
 
+	If SCPMoveChannel <> 0 Then StopChannel SCPMoveChannel
+	SCPMoveChannel = 0
+	If KillChannel <> 0 Then StopChannel KillChannel
+	KillChannel = 0
+
+	CameraBobTime# = 0
+	CameraBobX# = 0
+	CameraBobY# = 0
+	CameraBobRoll# = 0
+	PlayerMoveMode = 0
+
 	StopChannel MusicChannel
 
 	MusicChannel = PlaySound(OstSound)
@@ -3512,6 +3977,15 @@ Function ToggleFullscreen()
 
 	BlinkSCPDistance# = 0
 
+	SCPMoveChannel = 0
+	KillChannel = 0
+	SCPMovedThisFrame = 0
+	CameraBobTime# = 0
+	CameraBobX# = 0
+	CameraBobY# = 0
+	CameraBobRoll# = 0
+	PlayerMoveMode = 0
+
 End Function
 
 ; ============================================================
@@ -3519,6 +3993,7 @@ End Function
 ; ============================================================
 
 ResetObstacles()
+ResetWallParts()
 
 SetupAtmosphere()
 
@@ -3598,14 +4073,6 @@ While KeyHit(1) = 0
 	; BLINK
 	; ========================================================
 
-	If KeyDown(57) Then
-
-		If BlinkActive = 0 Then
-			StartBlink()
-		EndIf
-
-	EndIf
-
 	UpdateBlink()
 
 	; ========================================================
@@ -3613,6 +4080,7 @@ While KeyHit(1) = 0
 	; ========================================================
 
 	UpdatePlayer MainDT#
+	UpdateCameraBob MainDT#
 
 	; ========================================================
 	; DOORS
@@ -3662,7 +4130,9 @@ While KeyHit(1) = 0
 	; SCP
 	; ========================================================
 
+	SCPMovedThisFrame = 0
 	UpdateSCP MainDT#
+	UpdateSCPMoveSound()
 
 	; ========================================================
 	; ATTACK
